@@ -2952,7 +2952,8 @@ function ItemsTabClass:AddImplicitToDisplayItem()
 			end
 		end
 	end
-	if (self.displayItem.rarity ~= "UNIQUE" and self.displayItem.rarity ~= "RELIC") and (self.displayItem.type == "Helmet" or self.displayItem.type == "Body Armour" or self.displayItem.type == "Gloves" or self.displayItem.type == "Boots") then
+
+	if ((self.displayItem.rarity == "UNIQUE" or self.displayItem.name == "The Eternal Struggle") and self.displayItem.rarity ~= "RELIC") and (self.displayItem.type == "Helmet" or self.displayItem.type == "Body Armour" or self.displayItem.type == "Gloves" or self.displayItem.type == "Boots") then
 		if self.displayItem.cleansing then
 			t_insert(sourceList, { label = "Searing Exarch", sourceId = "EXARCH" })
 		end
@@ -2960,12 +2961,15 @@ function ItemsTabClass:AddImplicitToDisplayItem()
 			t_insert(sourceList, { label = "Eater of Worlds", sourceId = "EATER" })
 		end
 	end
+
 	if self.displayItem.type ~= "Flask" and self.displayItem.type ~= "Jewel" then
 		--t_insert(sourceList, { label = "Synth", sourceId = "SYNTHESIS" }) -- synth removed until we get proper support for where the mods go
 		t_insert(sourceList, { label = "Delve", sourceId = "DelveImplicit" })
 	end
+
 	t_insert(sourceList, { label = "Custom", sourceId = "CUSTOM" })
 	buildMods(sourceList[1].sourceId)
+
 	local function addModifier()
 		local item = new("Item", self.displayItem:BuildRaw())
 		item.id = self.displayItem.id
