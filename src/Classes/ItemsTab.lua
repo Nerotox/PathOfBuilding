@@ -73,6 +73,243 @@ local function isAnointable(item)
 		and (item.canBeAnointed or item.base.type == "Amulet")
 end
 
+local function getItemBaseListKey(base)
+	return base.type .. (base.subType and ": " .. base.subType or "")
+end
+
+local function getItemBaseAffixes(buildData, base)
+	return (base.subType and buildData.itemMods[base.type .. base.subType])
+		or buildData.itemMods[base.type]
+		or buildData.itemMods.Item
+end
+
+local function getCompatibleItemBaseTypes(buildData, item)
+	local baseTypes = { }
+	if item.base.subType == "Cluster" then
+		return baseTypes
+	end
+	for _, baseType in ipairs(buildData.itemBaseTypeList) do
+		local baseList = buildData.itemBaseLists[baseType]
+		local base = baseList and baseList[1] and baseList[1].base
+		if base and base.type == item.base.type and getItemBaseAffixes(buildData, base) == item.affixes then
+			t_insert(baseTypes, {
+				label = base.subType or base.type,
+				key = baseType,
+			})
+		end
+	end
+	return baseTypes
+end
+
+local function canChangeItemBase(item)
+	return item and item.base and item.base.subType ~= "Cluster" and (item.rarity == "NORMAL"
+		or (item.crafted and (item.rarity == "MAGIC" or item.rarity == "RARE")))
+end
+
+local function isExperimentalBase(base)
+	return base and base.tags and base.tags.experimental_base
+end
+
+local function hasBaseModLine(modLines, baseModText)
+	for line in (baseModText or ""):gmatch("[^\n]+") do
+		for _, modLine in ipairs(modLines) do
+			if modLine.line == line then
+				return true
+			end
+		end
+	end
+	return false
+end
+
+local function saveDisabledModLines(item)
+	local disabledLines = { }
+	for _, modListName in ipairs({ "enchantModLines", "scourgeModLines", "classRequirementModLines", "implicitModLines", "explicitModLines", "crucibleModLines" }) do
+		for _, modLine in ipairs(item[modListName]) do
+			if modLine.disabled then
+				disabledLines[modLine.line] = (disabledLines[modLine.line] or 0) + 1
+			end
+		end
+	end
+	return disabledLines
+end
+
+local function restoreDisabledModLines(item, disabledLines)
+	for _, modListName in ipairs({ "enchantModLines", "scourgeModLines", "classRequirementModLines", "implicitModLines", "explicitModLines", "crucibleModLines" }) do
+		for _, modLine in ipairs(item[modListName]) do
+			if (disabledLines[modLine.line] or 0) > 0 then
+				modLine.disabled = true
+				disabledLines[modLine.line] = disabledLines[modLine.line] - 1
+			end
+		end
+	end
+end
+
+local function replaceBaseModLines(modLines, oldModText, newModText, makeModLine)
+	local oldBaseMods = { }
+	local oldBaseModIndexes = { }
+	for line in (oldModText or ""):gmatch("[^\n]+") do
+		for index, modLine in ipairs(modLines) do
+			if not oldBaseModIndexes[index] and modLine.line == line then
+				oldBaseModIndexes[index] = true
+				t_insert(oldBaseMods, modLine)
+				break
+			end
+		end
+	end
+
+	local newModLines = { }
+	local reusedOldBaseMods = { }
+	for line in (newModText or ""):gmatch("[^\n]+") do
+		local newModLine
+		for index, oldBaseMod in ipairs(oldBaseMods) do
+			if not reusedOldBaseMods[index] and oldBaseMod.line == line then
+				reusedOldBaseMods[index] = true
+				newModLine = oldBaseMod
+				break
+			end
+		end
+		if not newModLine then
+			newModLine = makeModLine(line, #newModLines + 1)
+			local oldBaseMod = oldBaseMods[#newModLines + 1]
+			if oldBaseMod and oldBaseMod.disabled then
+				newModLine.disabled = true
+			end
+		end
+		t_insert(newModLines, newModLine)
+	end
+	for index, modLine in ipairs(modLines) do
+		if not oldBaseModIndexes[index] then
+			t_insert(newModLines, modLine)
+		end
+	end
+	return newModLines
+end
+
+local function getOtherAffixTags(item, targetList, targetIndex)
+	local tags = { }
+	for _, listName in ipairs({ "prefixes", "suffixes" }) do
+		for index, affix in ipairs(item[listName]) do
+			if item[listName] ~= targetList or index ~= targetIndex then
+				local mod = item.affixes[affix.modId]
+				if mod then
+					for _, tag in ipairs(mod.tags or { }) do
+						tags[tag] = true
+					end
+				end
+			end
+		end
+	end
+	if item.clusterJewel and item.clusterJewelSkill then
+		local skill = item.clusterJewel.skills[item.clusterJewelSkill]
+		if skill then
+			tags[skill.tag] = true
+		end
+	end
+	return tags
+end
+
+local function removeInvalidAffixes(item)
+	local removedAffixes = { }
+	local removed
+	repeat
+		removed = false
+		for _, listName in ipairs({ "prefixes", "suffixes" }) do
+			local list = item[listName]
+			local limit = list.limit or (item.affixLimit / 2)
+			for index, affix in ipairs(list) do
+				local mod = item.affixes[affix.modId]
+				local canKeepMod = mod and (mod.affix == "Essences" or item:CanHaveMod(mod, getOtherAffixTags(item, list, index)))
+				if mod and (index > limit or not canKeepMod) then
+					t_insert(removedAffixes, { mod = mod, range = affix.range })
+					list[index] = { modId = "None", fractured = affix.fractured }
+					removed = true
+				end
+			end
+		end
+	until not removed
+	return removedAffixes
+end
+
+local function changeItemBase(buildData, item, base)
+	if not canChangeItemBase(item) or not base or item.baseName == base.name then
+		return false, { }
+	end
+	if base.base.type ~= item.base.type or getItemBaseAffixes(buildData, base.base) ~= item.affixes then
+		return false, { }
+	end
+
+	local oldBase = item.base
+	local changingToExperimentalBase = isExperimentalBase(base.base)
+	local newBaseImplicit = base.base.implicit
+	if item.synthesised and changingToExperimentalBase then
+		-- Synthesised items cannot use Heist experimental bases. The implicit
+		-- lines on an imported Synthesised Item are its synthesis implicits when
+		-- the old native base implicit is absent, so discard them when converting
+		-- to an experimental base and let the new base provide its own implicit.
+		if not hasBaseModLine(item.implicitModLines, oldBase.implicit) then
+			local retainedImplicitModLines = { }
+			for _, modLine in ipairs(item.implicitModLines) do
+				if modLine.exarch or modLine.eater then
+					t_insert(retainedImplicitModLines, modLine)
+				end
+			end
+			item.implicitModLines = retainedImplicitModLines
+		end
+		item.synthesised = false
+	elseif item.synthesised then
+		-- Synthesised items retain their synthesis implicits instead of gaining
+		-- the target base's native implicit.
+		newBaseImplicit = nil
+	else
+		for _, modLine in ipairs(item.implicitModLines) do
+			if modLine.exarch or modLine.eater or modLine.synthesis then
+				newBaseImplicit = nil
+				break
+			end
+		end
+		-- A corruption implicit replaces the native base implicit. Preserve that
+		-- replacement rather than adding the new base's native implicit alongside it.
+		if item.corrupted and #item.implicitModLines > 0 and not hasBaseModLine(item.implicitModLines, oldBase.implicit) then
+			newBaseImplicit = nil
+		end
+	end
+	item.implicitModLines = replaceBaseModLines(item.implicitModLines, oldBase.implicit, newBaseImplicit, function(line, index)
+		return {
+			line = line,
+			modTags = base.base.implicitModTypes and base.base.implicitModTypes[index] or { },
+		}
+	end)
+	item.enchantModLines = replaceBaseModLines(item.enchantModLines, oldBase.enchant, base.base.enchant, function(line)
+		return { line = line, crafted = true, implicit = true, enchant = true }
+	end)
+	if base.base.subType == "Talisman" then
+		for index = #item.enchantModLines, 1, -1 do
+			if item.enchantModLines[index].line:find("Allocates ", 1, true) then
+				t_remove(item.enchantModLines, index)
+			end
+		end
+	end
+	item.baseName = base.name
+	-- Raw armour values are derived from the old base. Preserve the base-roll
+	-- percentiles, but rebuild the values against the new base.
+	if item.armourData then
+		item.armourData = {
+			ArmourBasePercentile = item.armourData.ArmourBasePercentile,
+			EvasionBasePercentile = item.armourData.EvasionBasePercentile,
+			EnergyShieldBasePercentile = item.armourData.EnergyShieldBasePercentile,
+			WardBasePercentile = item.armourData.WardBasePercentile,
+		}
+	end
+	item:BuildAndParseRaw()
+	local removedAffixes = removeInvalidAffixes(item)
+	local disabledLines = saveDisabledModLines(item)
+	-- Recraft even if every modifier remains valid so the level requirement is
+	-- recalculated from the new base and the retained structured affixes.
+	item:Craft()
+	restoreDisabledModLines(item, disabledLines)
+	return true, removedAffixes
+end
+
 local function buildModSortList()
 	local sortList = { { label = "Default", stat = nil } }
 	local sortStats = { }
@@ -462,8 +699,67 @@ holding Shift will put it in the second.]])
 		end
 	end
 
+	-- Section: Base
+	self.controls.displayItemSectionBase = new("Control"):Control({"TOPLEFT",self.controls.displayItemSectionVariant,"BOTTOMLEFT"}, {0, 0, 0, function()
+		return self.controls.displayItemBase:IsShown() and 28 or 0
+	end})
+	local function addBasePreview(tooltip, mode, base)
+		tooltip:Clear()
+		if mode ~= "OUT" and self.displayItem and base then
+			local previewItem = new("Item"):Item(self.displayItem:BuildRaw())
+			local _, removedAffixes = changeItemBase(self.build.data, previewItem, base)
+			-- Render the preview as a normal item so base-provided modifier
+			-- magnitudes (for example, the Heist bases' increased suffix/prefix
+			-- magnitudes) are applied to the retained rolls.
+			self:AddItemTooltip(tooltip, previewItem)
+			if #removedAffixes > 0 then
+				tooltip:AddSeparator(10)
+				tooltip:AddLine(14, "^xFF5555Incompatible modifiers will be removed:")
+				for _, removedAffix in ipairs(removedAffixes) do
+					for _, line in ipairs(removedAffix.mod) do
+						tooltip:AddLine(14, "^xFF7777" .. itemLib.applyRange(line, removedAffix.range or main.defaultItemAffixQuality or 0.5))
+					end
+				end
+			end
+		end
+	end
+	self.controls.displayItemBaseTypeLabel = new("LabelControl"):LabelControl({"TOPLEFT",self.controls.displayItemSectionBase,"TOPLEFT"}, {0, 0, 0, 16}, "^7Type:")
+	self.controls.displayItemBaseTypeLabel.shown = function()
+		return canChangeItemBase(self.displayItem) and (#self.controls.displayItemBaseType.list > 1 or #self.controls.displayItemBase.list > 1)
+	end
+	self.controls.displayItemBaseType = new("DropDownControl"):DropDownControl({"LEFT",self.controls.displayItemBaseTypeLabel,"RIGHT"}, {4, 0, 160, 20}, { }, function(index, value)
+		self.controls.displayItemBase.list = self.build.data.itemBaseLists[value.key]
+		self.controls.displayItemBase.selIndex = 1
+		self:ChangeDisplayItemBase(self.controls.displayItemBase.list[1])
+	end)
+	self.controls.displayItemBaseType.shown = function()
+		return canChangeItemBase(self.displayItem) and (#self.controls.displayItemBaseType.list > 1 or #self.controls.displayItemBase.list > 1)
+	end
+	self.controls.displayItemBaseType.enabled = function()
+		return #self.controls.displayItemBaseType.list > 1
+	end
+	self.controls.displayItemBaseType.maxDroppedWidth = 1000
+	self.controls.displayItemBaseType.tooltipFunc = function(tooltip, mode, index, value)
+		local baseList = value and self.build.data.itemBaseLists[value.key]
+		addBasePreview(tooltip, mode, baseList and baseList[1])
+	end
+	self.controls.displayItemBaseLabel = new("LabelControl"):LabelControl({"LEFT",self.controls.displayItemBaseType,"RIGHT"}, {8, 0, 0, 16}, "^7Base:")
+	self.controls.displayItemBaseLabel.shown = function()
+		return canChangeItemBase(self.displayItem) and (#self.controls.displayItemBaseType.list > 1 or #self.controls.displayItemBase.list > 1)
+	end
+	self.controls.displayItemBase = new("DropDownControl"):DropDownControl({"LEFT",self.controls.displayItemBaseLabel,"RIGHT"}, {4, 0, 210, 20}, { }, function(index, value)
+		self:ChangeDisplayItemBase(value)
+	end)
+	self.controls.displayItemBase.shown = function()
+		return canChangeItemBase(self.displayItem) and (#self.controls.displayItemBaseType.list > 1 or #self.controls.displayItemBase.list > 1)
+	end
+	self.controls.displayItemBase.maxDroppedWidth = 1000
+	self.controls.displayItemBase.tooltipFunc = function(tooltip, mode, index, value)
+		addBasePreview(tooltip, mode, value)
+	end
+
 	-- Section: Sockets and Links
-	self.controls.displayItemSectionSockets = new("Control"):Control({"TOPLEFT",self.controls.displayItemSectionVariant,"BOTTOMLEFT"}, {0, 0, 0, function()
+	self.controls.displayItemSectionSockets = new("Control"):Control({"TOPLEFT",self.controls.displayItemSectionBase,"BOTTOMLEFT"}, {0, 0, 0, function()
 		return self.displayItem and self.displayItem.selectableSocketCount > 0 and 28 or 0
 	end})
 	for i = 1, 6 do
@@ -2070,6 +2366,13 @@ function ItemsTabClass:SetDisplayItem(item)
 			self.controls.displayItemAltVariant5.selIndex = item.variantAlt5
 			self.controls.displayItemAltVariant5:CheckDroppedWidth(true)
 		end
+		local baseListKey = getItemBaseListKey(item.base)
+		self.controls.displayItemBaseType.list = getCompatibleItemBaseTypes(self.build.data, item)
+		self.controls.displayItemBaseType:SelByValue(baseListKey, "key")
+		self.controls.displayItemBaseType:CheckDroppedWidth(true)
+		self.controls.displayItemBase.list = self.build.data.itemBaseLists[baseListKey] or { }
+		self.controls.displayItemBase:SelByValue(item.baseName, "name")
+		self.controls.displayItemBase:CheckDroppedWidth(true)
 		self:UpdateSocketControls()
 		if item.crafted then
 			self:UpdateAffixControls()
@@ -2111,6 +2414,14 @@ function ItemsTabClass:SetDisplayItem(item)
 		end
 	else
 		self.snapHScroll = "LEFT"
+	end
+end
+
+---@param base ItemBaseEntry
+function ItemsTabClass:ChangeDisplayItemBase(base)
+	local item = self.displayItem
+	if changeItemBase(self.build.data, item, base) then
+		self:SetDisplayItem(item)
 	end
 end
 

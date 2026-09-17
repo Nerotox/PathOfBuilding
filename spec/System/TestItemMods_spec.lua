@@ -922,6 +922,337 @@ describe("TetsItemMods", function()
 		assert.is_true(controls.displayItemAffix1:IsShown())
 	end)
 
+	it("changes the base of a crafted item without losing its modifiers", function()
+		build.itemsTab:CreateDisplayItemFromRaw([[
+			Rarity: RARE
+			New Item
+			Iron Ring
+			Crafted: true
+			Prefix: None
+			Prefix: None
+			Prefix: None
+			Suffix: {range:0.5}Strength1
+			Suffix: None
+			Suffix: None
+			Catalyst: Fertile
+			CatalystQuality: 20
+			Implicits: 1
+			Adds 1 to 4 Physical Damage to Attacks
+			+10 to Strength
+			{crafted}+8 to Strength
+		]])
+
+		local baseControl = build.itemsTab.controls.displayItemBase
+		assert.is_true(baseControl:IsShown())
+		baseControl:SelByValue("Coral Ring", "name")
+		local coralRingIndex = baseControl.selIndex
+		baseControl.selIndex = 0
+		baseControl:SetSel(coralRingIndex)
+
+		local item = build.itemsTab.displayItem
+		assert.are.equals("Coral Ring", item.baseName)
+		assert.are.equals("+(20-30) to maximum Life", item.implicitModLines[1].line)
+		assert.are.equals(1, #item.implicitModLines)
+		assert.are.equals("Strength1", item.suffixes[1].modId)
+		assert.are.equals(0.5, item.suffixes[1].range)
+		local hasCustomModifier = false
+		for _, modLine in ipairs(item.explicitModLines) do
+			hasCustomModifier = hasCustomModifier or modLine.crafted and modLine.line == "+8 to Strength"
+		end
+		assert.is_true(hasCustomModifier)
+		assert.are.equals(4, item.catalyst)
+		assert.are.equals(20, item.catalystQuality)
+	end)
+
+	it("preserves disabled modifiers when changing the base", function()
+		build.itemsTab:CreateDisplayItemFromRaw([[
+			Rarity: RARE
+			New Item
+			Iron Ring
+			Crafted: true
+			Prefix: None
+			Prefix: None
+			Prefix: None
+			Suffix: {range:0.5}Strength1
+			Suffix: None
+			Suffix: None
+			Implicits: 0
+		]])
+
+		local item = build.itemsTab.displayItem
+		local disabledLine = item.explicitModLines[1]
+		disabledLine.disabled = true
+		local disabledText = disabledLine.line
+		local baseControl = build.itemsTab.controls.displayItemBase
+		baseControl:SelByValue("Coral Ring", "name")
+		local coralRingIndex = baseControl.selIndex
+		baseControl.selIndex = 0
+		baseControl:SetSel(coralRingIndex)
+
+		local preservedDisabled = false
+		for _, modLine in ipairs(item.explicitModLines) do
+			preservedDisabled = preservedDisabled or (modLine.line == disabledText and modLine.disabled)
+		end
+		assert.is_true(preservedDisabled)
+	end)
+
+	it("preserves essence modifiers when changing weapon bases", function()
+		build.itemsTab:CreateDisplayItemFromRaw([[
+			Rarity: RARE
+			New Item
+			Lathi
+			Crafted: true
+			Prefix: {range:0.5}SpellDamageOnTwoHandWeaponEssence7
+			Prefix: None
+			Prefix: None
+			Suffix: None
+			Suffix: None
+			Suffix: None
+			Implicits: 1
+			+25% Chance to Block Spell Damage
+		]])
+
+		local baseControl = build.itemsTab.controls.displayItemBase
+		baseControl:SelByValue("Eclipse Staff", "name")
+		local eclipseStaffIndex = baseControl.selIndex
+		baseControl.selIndex = 0
+		baseControl:SetSel(eclipseStaffIndex)
+
+		local item = build.itemsTab.displayItem
+		assert.are.equals("Eclipse Staff", item.baseName)
+		assert.are.equals("SpellDamageOnTwoHandWeaponEssence7", item.prefixes[1].modId)
+	end)
+
+	it("preserves synthesized implicits in base previews and removes them for experimental bases", function()
+		build.itemsTab:CreateDisplayItemFromRaw([[
+			Rarity: RARE
+			Gale Eye
+			Topaz Ring
+			Crafted: true
+			Prefix: None
+			Prefix: None
+			Prefix: None
+			Suffix: {range:0.5}Strength1
+			Suffix: None
+			Suffix: None
+			Implicits: 1
+			+1 to Maximum Frenzy Charges
+			+10 to Strength
+			Synthesised Item
+		]])
+
+		local item = build.itemsTab.displayItem
+		assert.is_true(item.synthesised)
+		local previewItem = new("Item"):Item(item:BuildRaw())
+		assert.is_true(previewItem.synthesised)
+
+		local baseControl = build.itemsTab.controls.displayItemBase
+		baseControl:SelByValue("Helical Ring", "name")
+		local helicalRingIndex = baseControl.selIndex
+		local tooltip = new("Tooltip"):Tooltip()
+		baseControl.tooltipFunc(tooltip, "HOVER", helicalRingIndex, baseControl:GetSelValue())
+		local hasScaledSuffix = false
+		for _, line in ipairs(tooltip.lines) do
+			hasScaledSuffix = hasScaledSuffix or line.text and line.text:find("+15 to Strength", 1, true) ~= nil
+		end
+		assert.is_true(hasScaledSuffix)
+		baseControl.selIndex = 0
+		baseControl:SetSel(helicalRingIndex)
+
+		item = build.itemsTab.displayItem
+		assert.are.equals("Helical Ring", item.baseName)
+		assert.is_falsy(item.synthesised)
+		assert.are.equals("-2 Prefix Modifiers allowed", item.implicitModLines[1].line)
+		assert.are.equals(4, #item.implicitModLines)
+		for _, modLine in ipairs(item.implicitModLines) do
+			assert.is_not.equals("+1 to Maximum Frenzy Charges", modLine.line)
+		end
+	end)
+
+	it("changes the base of a normal item", function()
+		build.itemsTab:CreateDisplayItemFromRaw([[
+			Rarity: NORMAL
+			Iron Ring
+			Implicits: 1
+			Adds 1 to 4 Physical Damage to Attacks
+		]])
+
+		local baseControl = build.itemsTab.controls.displayItemBase
+		assert.is_true(baseControl:IsShown())
+		baseControl:SelByValue("Coral Ring", "name")
+		local coralRingIndex = baseControl.selIndex
+		baseControl.selIndex = 0
+		baseControl:SetSel(coralRingIndex)
+
+		local item = build.itemsTab.displayItem
+		assert.are.equals("NORMAL", item.rarity)
+		assert.are.equals("Coral Ring", item.baseName)
+		assert.are.equals("+(20-30) to maximum Life", item.implicitModLines[1].line)
+		assert.are.equals(1, #item.implicitModLines)
+	end)
+
+	it("changes the base of a corrupted crafted item", function()
+		build.itemsTab:CreateDisplayItemFromRaw([[
+			Rarity: RARE
+			New Item
+			Iron Ring
+			Crafted: true
+			Prefix: None
+			Prefix: None
+			Prefix: None
+			Suffix: None
+			Suffix: None
+			Suffix: None
+			Implicits: 1
+			+1 to Maximum Endurance Charges
+			Corrupted
+		]])
+
+		local baseControl = build.itemsTab.controls.displayItemBase
+		assert.is_true(baseControl:IsShown())
+		baseControl:SelByValue("Coral Ring", "name")
+		local coralRingIndex = baseControl.selIndex
+		baseControl.selIndex = 0
+		baseControl:SetSel(coralRingIndex)
+
+		local item = build.itemsTab.displayItem
+		assert.is_true(item.corrupted)
+		assert.are.equals("Coral Ring", item.baseName)
+		assert.are.equals("+1 to Maximum Endurance Charges", item.implicitModLines[1].line)
+		assert.are.equals(1, #item.implicitModLines)
+	end)
+
+	it("removes anoints when changing an amulet to a talisman", function()
+		build.itemsTab:CreateDisplayItemFromRaw([[
+			Rarity: RARE
+			New Item
+			Amber Amulet
+			Crafted: true
+			Prefix: None
+			Prefix: None
+			Prefix: None
+			Suffix: None
+			Suffix: None
+			Suffix: None
+			Implicits: 2
+			+(20-30) to Strength
+			{crafted}Allocates Constitution
+		]])
+
+		local baseTypeControl = build.itemsTab.controls.displayItemBaseType
+		baseTypeControl:SelByValue("Amulet: Talisman", "key")
+		local talismanTypeIndex = baseTypeControl.selIndex
+		baseTypeControl.selIndex = 0
+		baseTypeControl:SetSel(talismanTypeIndex)
+		local baseControl = build.itemsTab.controls.displayItemBase
+		baseControl:SelByValue("Black Maw Talisman", "name")
+		local blackMawIndex = baseControl.selIndex
+		baseControl.selIndex = 0
+		baseControl:SetSel(blackMawIndex)
+
+		local item = build.itemsTab.displayItem
+		assert.are.equals("Talisman", item.base.subType)
+		assert.are.equals("Black Maw Talisman", item.baseName)
+		assert.are.equals(0, #build.itemsTab:getAnoint(item))
+		local hasTalismanImplicit = false
+		for _, modLines in ipairs({ item.enchantModLines, item.implicitModLines }) do
+			for _, modLine in ipairs(modLines) do
+				hasTalismanImplicit = hasTalismanImplicit or modLine.line == "Has 1 Socket"
+			end
+		end
+		assert.is_true(hasTalismanImplicit)
+	end)
+
+	it("changes the defence type and rebuilds values for crafted armour", function()
+		build.itemsTab:CreateDisplayItemFromRaw([[
+			Rarity: RARE
+			New Item
+			Plate Vest
+			Armour: 32
+			ArmourBasePercentile: 1
+			Crafted: true
+			Prefix: {range:0.5}LocalIncreasedPhysicalDamageReductionRatingPercent7
+			Prefix: None
+			Prefix: None
+			Suffix: {range:0.5}Strength1
+			Suffix: None
+			Suffix: None
+			Quality: 0
+			Implicits: 0
+			96% increased Armour
+			+10 to Strength
+			{crafted}+8 to Dexterity
+		]])
+
+		local baseTypeControl = build.itemsTab.controls.displayItemBaseType
+		local originalBaseTypeIndex = baseTypeControl.selIndex
+		baseTypeControl:SelByValue("Body Armour: Armour/Energy Shield", "key")
+		local armourEnergyShieldIndex = baseTypeControl.selIndex
+		local armourEnergyShieldType = baseTypeControl:GetSelValue()
+		baseTypeControl.selIndex = originalBaseTypeIndex
+		local tooltip = new("Tooltip"):Tooltip()
+		baseTypeControl.tooltipFunc(tooltip, "HOVER", armourEnergyShieldIndex, armourEnergyShieldType)
+		local hasRemovalWarning = false
+		for _, line in ipairs(tooltip.lines) do
+			hasRemovalWarning = hasRemovalWarning or line.text and line.text:find("Incompatible modifiers will be removed", 1, true)
+		end
+		assert.is_true(hasRemovalWarning)
+		-- Changing the list must apply its first base even when the previous list
+		-- also happened to have index 1 selected.
+		build.itemsTab.controls.displayItemBase.selIndex = 1
+		baseTypeControl:SetSel(armourEnergyShieldIndex)
+		assert.are.equals("Armour/Energy Shield", build.itemsTab.displayItem.base.subType)
+		local baseControl = build.itemsTab.controls.displayItemBase
+		baseControl:SelByValue("Saint's Hauberk", "name")
+		local saintsHauberkIndex = baseControl.selIndex
+		baseControl.selIndex = 0
+		baseControl:SetSel(saintsHauberkIndex)
+
+		local item = build.itemsTab.displayItem
+		assert.are.equals("Saint's Hauberk", item.baseName)
+		assert.are.equals("None", item.prefixes[1].modId)
+		assert.are.equals("Strength1", item.suffixes[1].modId)
+		local hasCustomModifier = false
+		for _, modLine in ipairs(item.explicitModLines) do
+			hasCustomModifier = hasCustomModifier or modLine.crafted and modLine.line == "+8 to Dexterity"
+		end
+		assert.is_true(hasCustomModifier)
+		assert.is_true(item.armourData.Armour > 0)
+		assert.is_true(item.armourData.EnergyShield > 0)
+		assert.are.equals(1, item.armourData.ArmourBasePercentile)
+	end)
+
+	it("recalculates requirements when changing a crafted item base", function()
+		build.itemsTab:CreateDisplayItemFromRaw([[
+			Rarity: RARE
+			New Item
+			Leviathan Greaves
+			Armour: 359
+			ArmourBasePercentile: 0
+			Crafted: true
+			Prefix: None
+			Prefix: None
+			Prefix: None
+			Suffix: None
+			Suffix: None
+			Suffix: None
+			Quality: 0
+			LevelReq: 84
+			Implicits: 0
+		]])
+
+		local baseControl = build.itemsTab.controls.displayItemBase
+		baseControl:SelByValue("Antique Greaves", "name")
+		local antiqueGreavesIndex = baseControl.selIndex
+		baseControl.selIndex = 0
+		baseControl:SetSel(antiqueGreavesIndex)
+
+		local item = build.itemsTab.displayItem
+		assert.are.equals("Antique Greaves", item.baseName)
+		assert.are.equals(37, item.requirements.level)
+		assert.are.equals(67, item.requirements.str)
+	end)
+
 	it("sorts crafted modifier replacements without retaining the selected modifier", function()
 		local item = new("Item"):Item([[
 			Rarity: RARE
